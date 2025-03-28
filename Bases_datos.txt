@@ -1,0 +1,32 @@
+Tabla de conductores (Drivers)
+
+- driver_id: Identificador unico del conductor
+- session_start: fecha y hora de incisio de la session
+- session_end: fecha y hora de fin de la sesion 
+
+
+Eventos de Fatiga (Fatigue_Events)
+
+- event_id: identifcaor unico del Evento
+- driver_id: id del conductor (llave foranea)
+- event_time: fecha y hora del evento
+- alert_type: tipo de alerta (somnolencia, cabeza reclinada, expresion de cansancio)
+- eyes_closed_seconds: cantidad de segundo que se cerraron los ojos
+- alarm_triggered: Si la alarma sono (tipo bool)
+
+
+Emociones (Emotions) - opcional solo si se implementan las Emociones
+
+emotion_id: Identificador de la Emocion
+driver_id: Identificador del chofer
+event_time: fecha y hora de la deteccion
+emotion: Emocion detectada
+
+Resumen por sesion (Session_Summary)
+
+summary_id: Identificador unico
+driver_id: Identificador del chofer
+session_start: Inicio de la sesion
+total_alarms: Total de veces que sono la alarma
+total_eye_closed: Total de segundos con los ojos cerrados
+fatigue_events: Numero total de evntos de fatiga 
