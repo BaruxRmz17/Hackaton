@@ -1,4 +1,3 @@
-# main.py
 import cv2
 import dlib
 import numpy as np
@@ -7,7 +6,11 @@ from playsound import playsound
 import time
 from datetime import datetime
 
-# Supabase
+# DeepFace para reconocimiento de emociones
+# Instalar con: pip install deepface
+from deepface import DeepFace
+
+# Importar credenciales de Supabase
 from supabase_config import SUPABASE_URL, SUPABASE_KEY
 from supabase import create_client, Client
 
@@ -20,25 +23,13 @@ EAR_THRESHOLD = 0.25
 # Tiempo que se permite con ojos cerrados antes de sonar la alarma (segundos)
 EYE_CLOSED_WARNING_SEC = 3.0  
 
-# Umbral de tamaño de buffer para suavizar EAR (promedio móvil)
+# Buffer para suavizar EAR (promedio móvil simple)
 EAR_BUFFER_SIZE = 5  
-
-# Umbral de ángulos (en grados) para considerar la cabeza inclinada
-# (por ejemplo, si pitch o yaw o roll exceden +/- 20°, se considera inclinada)
-HEAD_TILT_THRESHOLD = 20.0
-# Tiempo de advertencia y alarma para inclinación
-HEAD_TILT_WARNING_SEC = 2.0
-HEAD_TILT_ALARM_SEC = 5.0
 
 # Variables para FATIGA / SOMNOLENCIA
 eyes_closed_start_time = None  # Cuándo se detectó que los ojos se cerraron
 eyes_closed_warning_shown = False
 eyes_closed_alarm_triggered = False
-
-# Variables para INCLINACIÓN DE CABEZA
-head_tilt_start_time = None
-head_tilt_warning_shown = False
-head_tilt_alarm_triggered = False
 
 # Contadores generales
 TOTAL_EYE_CLOSED = 0.0  # Acumulado de tiempo con ojos cerrados
@@ -55,16 +46,16 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 DRIVER_ID = "Conductor_001"
 SESSION_START = datetime.now()
 
-# Insertar inicio de sesión en supabase
+# Insertar inicio de sesión en supabase (tabla drivers)
 supabase.table("drivers").insert({
     "driver_id": DRIVER_ID,
     "session_start": SESSION_START.isoformat()
 }).execute()
 
 # Inicializar captura de video (cámara)
-cap = cv2.VideoCapture(0)  # Asegúrate de que sea la cámara correcta
+cap = cv2.VideoCapture(0)  # Ajusta el índice de cámara si es necesario
 
-# Detector y predictor de Dlib
+# Detector de rostros y predictor de landmarks de Dlib
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
@@ -89,77 +80,24 @@ def moving_average(values, window_size):
     """
     Devuelve el promedio móvil de una lista de valores.
     """
+    import numpy as np
+    if len(values) == 0:
+        return 0.0
     if len(values) < window_size:
         return np.mean(values)
     else:
         return np.mean(values[-window_size:])
 
-def get_head_pose(shape, frame_size):
-    """
-    Calcula la pose de la cabeza (pitch, yaw, roll) usando solvePnP.
-    Devuelve (pitch, yaw, roll) en grados.
-    shape: np.array de 68x2 con landmarks faciales
-    frame_size: tupla (width, height) del frame para estimar la cámara intrínseca
-    """
-    # Puntos 2D relevantes de la cara (en la imagen)
-    image_points = np.array([
-        shape[30],  # Nariz
-        shape[8],   # Barbilla
-        shape[36],  # Esquina izq. ojo izq.
-        shape[45],  # Esquina der. ojo der.
-        shape[48],  # Esquina izq. boca
-        shape[54]   # Esquina der. boca
-    ], dtype="double")
-
-    # Puntos 3D del modelo de la cabeza (arbitrarios pero proporcionales)
-    model_points = np.array([
-        (0.0, 0.0, 0.0),         # Nariz
-        (0.0, -330.0, -65.0),    # Barbilla
-        (-225.0, 170.0, -135.0), # Ojo izq.
-        (225.0, 170.0, -135.0),  # Ojo der.
-        (-150.0, -150.0, -125.0),# Boca izq.
-        (150.0, -150.0, -125.0)  # Boca der.
-    ])
-
-    # Parámetros intrínsecos de cámara aproximados
-    focal_length = frame_size[0]
-    center = (frame_size[0] / 2, frame_size[1] / 2)
-    camera_matrix = np.array([
-        [focal_length, 0, center[0]],
-        [0, focal_length, center[1]],
-        [0, 0, 1]
-    ], dtype="double")
-
-    dist_coeffs = np.zeros((4, 1))  # Suponemos sin distorsión
-
-    success, rotation_vector, _ = cv2.solvePnP(
-        model_points, image_points, camera_matrix, dist_coeffs,
-        flags=cv2.SOLVEPNP_ITERATIVE
-    )
-    if not success:
-        return 0.0, 0.0, 0.0
-
-    # Convertir a ángulos (pitch, yaw, roll)
-    rmat, _ = cv2.Rodrigues(rotation_vector)
-    # Extraer ángulos en grados
-    # Referencia: https://learnopencv.com/rotation-matrix-to-euler-angles/
-    sy = np.sqrt(rmat[0, 0]*rmat[0, 0] + rmat[1, 0]*rmat[1, 0])
-    singular = sy < 1e-6
-
-    if not singular:
-        pitch = np.arctan2(-rmat[2, 0], sy)
-        yaw = np.arctan2(rmat[1, 0], rmat[0, 0])
-        roll = np.arctan2(rmat[2, 1], rmat[2, 2])
-    else:
-        pitch = np.arctan2(-rmat[2, 0], sy)
-        yaw = np.arctan2(-rmat[0, 1], rmat[1, 1])
-        roll = 0
-
-    pitch = np.degrees(pitch)
-    yaw = np.degrees(yaw)
-    roll = np.degrees(roll)
-
-    return pitch, yaw, roll
+# Mapeo opcional de emociones de DeepFace a español
+emotion_map = {
+    "angry": "enojado",
+    "disgust": "disgust",     # No siempre se reporta
+    "fear": "miedo",
+    "happy": "feliz",
+    "sad": "triste",
+    "surprise": "sorprendido",
+    "neutral": "neutral"
+}
 
 # ----------------------------------------------------------------------------
 #                           BUCLE PRINCIPAL
@@ -179,14 +117,12 @@ while True:
     frame_duration = current_time - last_frame_time
     last_frame_time = current_time
 
-    frame_height, frame_width = frame.shape[:2]
-
-    # Por si no se detecta ninguna cara, reseteamos algunas alertas visuales
     face_detected = False
 
+    # ----------------------- DETECCIÓN DE ROSTRO y LANDMARKS ------------------------
     for face in faces:
         face_detected = True
-        # Obtener landmarks
+        # Predecir landmarks
         shape_dlib = predictor(frame_gray, face)
         landmarks = np.array([[p.x, p.y] for p in shape_dlib.parts()])
 
@@ -197,20 +133,17 @@ while True:
         right_ear = calculate_ear(right_eye_points)
         ear = (left_ear + right_ear) / 2.0
 
-        # Suavizado del EAR
+        # Suavizar EAR con promedio móvil
         ear_buffer.append(ear)
         smoothed_ear = moving_average(ear_buffer, EAR_BUFFER_SIZE)
 
-        # Head Pose
-        pitch, yaw, roll = get_head_pose(landmarks, (frame_width, frame_height))
-
-        # Dibujar ojos en pantalla
+        # Dibujar ojos en la imagen (opcional)
         cv2.polylines(frame, [left_eye_points], True, (0, 255, 0), 1)
         cv2.polylines(frame, [right_eye_points], True, (0, 255, 0), 1)
 
-        # --------------------------------------------------------------------
-        # DETECCIÓN DE OJOS CERRADOS CON TIEMPO
-        # --------------------------------------------------------------------
+        # ---------------------------------------------------------------------------
+        # DETECCIÓN DE OJOS CERRADOS (SOMNOLENCIA)
+        # ---------------------------------------------------------------------------
         if smoothed_ear < EAR_THRESHOLD:
             # Acumular el tiempo de ojos cerrados
             TOTAL_EYE_CLOSED += frame_duration
@@ -223,23 +156,21 @@ while True:
 
             closed_duration = current_time - eyes_closed_start_time
 
-            # 1) Pasado cierto tiempo, mostrar ADVERTENCIA en pantalla
-            if closed_duration >= 0.0 and not eyes_closed_warning_shown:
-                # Se muestra ADVERTENCIA apenas cierra ojos, pero puedes darle
-                # un margen si lo deseas (por ej. 1 seg)
+            # Mostrar ADVERTENCIA apenas detectamos ojos cerrados
+            if not eyes_closed_warning_shown:
                 cv2.putText(frame, "ADVERTENCIA: OJOS CERRADOS",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                             0.7, (0, 255, 255), 2)
                 eyes_closed_warning_shown = True
 
-            # 2) Si supera los 3 segundos (EYE_CLOSED_WARNING_SEC), suena alarma
+            # Si supera los EYE_CLOSED_WARNING_SEC, sonar alarma
             if closed_duration >= EYE_CLOSED_WARNING_SEC and not eyes_closed_alarm_triggered:
                 playsound("alert.wav", block=False)
                 ALARM_COUNT += 1
                 FATIGUE_EVENT_COUNT += 1
                 eyes_closed_alarm_triggered = True
 
-                # Insertar evento en Supabase
+                # Insertar evento en Supabase (fatigue_events)
                 supabase.table("fatigue_events").insert({
                     "driver_id": DRIVER_ID,
                     "event_time": datetime.now().isoformat(),
@@ -252,100 +183,85 @@ while True:
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                             0.7, (0, 0, 255), 2)
             else:
-                # Si está cerrado, pero aún no se supera el umbral de alarma,
-                # solo mostramos la advertencia
+                # Mientras no llegue al tiempo de alarma, mantenemos la advertencia
                 if closed_duration < EYE_CLOSED_WARNING_SEC:
                     cv2.putText(frame, "ADVERTENCIA: OJOS CERRADOS",
                                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.7, (0, 255, 255), 2)
-
         else:
-            # Si EAR regresa por encima del umbral, ojos abiertos
+            # Si EAR regresa a > EAR_THRESHOLD, ojos abiertos
             eyes_closed_start_time = None
             eyes_closed_warning_shown = False
             eyes_closed_alarm_triggered = False
 
-        # --------------------------------------------------------------------
-        # DETECCIÓN DE CABEZA INCLINADA (PITCH, YAW, ROLL)
-        # Se considera inclinada si se pasa un umbral en cualquiera de los ángulos
-        # --------------------------------------------------------------------
-        def head_is_tilted(p, y, r):
-            """
-            Retorna True si alguno de los ángulos excede HEAD_TILT_THRESHOLD.
-            """
-            if abs(p) > HEAD_TILT_THRESHOLD:
-                return True
-            if abs(y) > HEAD_TILT_THRESHOLD:
-                return True
-            if abs(r) > HEAD_TILT_THRESHOLD:
-                return True
-            return False
+        # ---------------------------------------------------------------------------
+        # DETECCIÓN DE EMOCIONES con DeepFace
+        # ---------------------------------------------------------------------------
+        # Para un mejor resultado, recorta la cara detectada (ROI)
+        x1, y1, x2, y2 = face.left(), face.top(), face.right(), face.bottom()
+        roi_face = frame[y1:y2, x1:x2]
 
-        if head_is_tilted(pitch, yaw, roll):
-            if head_tilt_start_time is None:
-                # Se detectó inclinación por primera vez
-                head_tilt_start_time = current_time
-                head_tilt_warning_shown = False
-                head_tilt_alarm_triggered = False
+        try:
+            # Con enforce_detection=False evitamos error si la cara no se detecta bien
+            analysis = DeepFace.analyze(
+                img_path = roi_face,
+                actions = ['emotion'],
+                enforce_detection=False
+            )
+            # La respuesta suele tener la estructura:
+            # {
+            #   'emotion': {
+            #       'angry': 0.0, 'disgust': 0.0, 'fear': 0.0,
+            #       'happy': 99.99, 'sad': 0.01, 'surprise': 0.0, 'neutral': 0.0
+            #   },
+            #   'dominant_emotion': 'happy',
+            #   ...
+            # }
 
-            tilt_duration = current_time - head_tilt_start_time
+            # Emoción principal
+            dominant_emotion = analysis['dominant_emotion']
+            # Probabilidad de esa emoción (opcional, si quieres mostrarlo)
+            score = analysis['emotion'][dominant_emotion]
 
-            # Mostrar ADVERTENCIA luego de HEAD_TILT_WARNING_SEC
-            if tilt_duration >= HEAD_TILT_WARNING_SEC and not head_tilt_warning_shown:
-                cv2.putText(frame, "ADVERTENCIA: CABEZA INCLINADA",
-                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7, (0, 255, 255), 2)
-                head_tilt_warning_shown = True
+            # Mapeo a español (opcional)
+            emotion_es = emotion_map.get(dominant_emotion, dominant_emotion)
 
-            # Después de HEAD_TILT_ALARM_SEC, dispara alarma
-            if tilt_duration >= HEAD_TILT_ALARM_SEC and not head_tilt_alarm_triggered:
-                playsound("alert.wav", block=False)
-                ALARM_COUNT += 1
-                FATIGUE_EVENT_COUNT += 1
-                head_tilt_alarm_triggered = True
+            # Mostrar en pantalla la emoción principal
+            cv2.putText(
+                frame,
+                f"Emocion: {emotion_es} ({score:.2f}%)",
+                (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 0),
+                2
+            )
 
-                supabase.table("fatigue_events").insert({
-                    "driver_id": DRIVER_ID,
-                    "event_time": datetime.now().isoformat(),
-                    "alert_type": "cabeza muy inclinada",
-                    "eye_closed_seconds": 0.0,
-                    "alarm_triggered": True
-                }).execute()
+            # Insertar en la tabla "emotions" de Supabase
+            supabase.table("emotions").insert({
+                "driver_id": DRIVER_ID,
+                "event_time": datetime.now().isoformat(),
+                "emotion": emotion_es
+            }).execute()
 
-                cv2.putText(frame, "ALERTA: CABEZA MUY INCLINADA (ALARMA)",
-                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7, (0, 0, 255), 2)
+        except Exception as e:
+            # Si DeepFace falla en la detección, continuamos
+            # (Por ejemplo, si la cara está muy ladeada, muy oscura, etc.)
+            pass
 
-            else:
-                # Si ya se mostró la advertencia, pero no se ha llegado
-                # al tiempo de alarma
-                if tilt_duration < HEAD_TILT_ALARM_SEC:
-                    if head_tilt_warning_shown and not head_tilt_alarm_triggered:
-                        cv2.putText(frame, "ADVERTENCIA: CABEZA INCLINADA",
-                                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.7, (0, 255, 255), 2)
-        else:
-            # Regresó a postura normal
-            head_tilt_start_time = None
-            head_tilt_warning_shown = False
-            head_tilt_alarm_triggered = False
-
-        # --------------------------------------------------------------------
-        # MOSTRAR INFO DE DEBUG EN PANTALLA
-        # --------------------------------------------------------------------
-        cv2.putText(frame, f"EAR (promedio): {smoothed_ear:.2f}",
-                    (300, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7, (255, 255, 255), 2)
-        cv2.putText(frame, f"Pitch: {pitch:.2f} Yaw: {yaw:.2f} Roll: {roll:.2f}",
-                    (300, 60), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7, (255, 255, 255), 2)
-
-    # Si no se detecta rostro, podrías mostrar un mensaje o manejarlo diferente
+    # Si no se detecta ningún rostro
     if not face_detected:
         cv2.putText(frame, "No se detecta rostro",
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                     0.7, (0, 255, 255), 2)
 
+    # Mostrar EAR de depuración en pantalla (opcional)
+    if len(ear_buffer) > 0:
+        cv2.putText(frame, f"EAR (promedio): {moving_average(ear_buffer, EAR_BUFFER_SIZE):.2f}",
+                    (300, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (255, 255, 255), 2)
+
+    # Visualización
     cv2.imshow("Sistema de Deteccion de Fatiga - SafeDrive", frame)
 
     # Salir con tecla 'q'
