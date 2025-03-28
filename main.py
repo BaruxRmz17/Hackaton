@@ -8,13 +8,13 @@ import time
 from datetime import datetime
 
 # Crear cliente de Supabase
-from supabase_config import SUPABASE_URL, SUPABASE_KEY  # Solo importar las credenciales
-from supabase import create_client, Client  # Importar Supabase correctamente
+from supabase_config import SUPABASE_URL, SUPABASE_KEY
+from supabase import create_client, Client
 
 # Crear cliente de Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Resto de tu código (funciones y lógica de detección)
+# Funciones de cálculo
 def calculate_ear(eye):
     A = dist.euclidean(eye[1], eye[5])
     B = dist.euclidean(eye[2], eye[4])
@@ -23,9 +23,9 @@ def calculate_ear(eye):
     return ear
 
 def calculate_head_tilt(landmarks):
-    nose = landmarks[30]
-    left_eye = landmarks[36]
-    right_eye = landmarks[45]
+    nose = landmarks[30]  # Punta de la nariz
+    left_eye = landmarks[36]  # Esquina externa del ojo izquierdo
+    right_eye = landmarks[45]  # Esquina externa del ojo derecho
     eye_center = ((left_eye[0] + right_eye[0]) // 2, (left_eye[1] + right_eye[1]) // 2)
     delta_x = nose[0] - eye_center[0]
     delta_y = nose[1] - eye_center[1]
@@ -35,13 +35,14 @@ def calculate_head_tilt(landmarks):
 # Configuración inicial
 EAR_THRESHOLD = 0.25
 EAR_CONSEC_FRAMES = 20
-TILT_THRESHOLD = 30
+TILT_THRESHOLD = 70  # Aumentado a 70 grados para inclinación extrema (casi pecho)
 TILT_CONSEC_FRAMES = 20
 COUNTER_EAR = 0
 COUNTER_TILT = 0
 ALARM_COUNT = 0
 TOTAL_EYE_CLOSED = 0
 FATIGUE_EVENT_COUNT = 0
+ALARM_ACTIVE = False
 
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
@@ -91,11 +92,12 @@ while True:
             TOTAL_EYE_CLOSED += frame_duration
             if COUNTER_EAR >= EAR_CONSEC_FRAMES:
                 current_time = time.time()
-                if current_time - last_ear_check > 1:
+                if current_time - last_ear_check >= 1:
                     playsound("alert.wav", block=False)
                     ALARM_COUNT += 1
                     FATIGUE_EVENT_COUNT += 1
                     last_ear_check = current_time
+                    ALARM_ACTIVE = True
                     cv2.putText(frame, "ALERTA: OJOS CERRADOS", (10, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     supabase.table("fatigue_events").insert({
@@ -107,17 +109,21 @@ while True:
                     }).execute()
         else:
             COUNTER_EAR = 0
+            if ALARM_ACTIVE:
+                ALARM_ACTIVE = False
+                last_ear_check = time.time() - 1
 
-        if abs(tilt_angle) > TILT_THRESHOLD:
+        # Ajuste para inclinación extrema
+        if abs(tilt_angle) > TILT_THRESHOLD:  # Solo se activa con inclinación mayor a 70 grados
             COUNTER_TILT += 1
             if COUNTER_TILT >= TILT_CONSEC_FRAMES and COUNTER_EAR < EAR_CONSEC_FRAMES:
                 FATIGUE_EVENT_COUNT += 1
-                cv2.putText(frame, "ALERTA: CABEZA INCLINADA", (10, 60),
+                cv2.putText(frame, "ALERTA: CABEZA MUY INCLINADA", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 supabase.table("fatigue_events").insert({
                     "driver_id": DRIVER_ID,
                     "event_time": datetime.now().isoformat(),
-                    "alert_type": "cabeza inclinada",
+                    "alert_type": "cabeza muy inclinada",
                     "eye_closed_seconds": 0.0,
                     "alarm_triggered": False
                 }).execute()
